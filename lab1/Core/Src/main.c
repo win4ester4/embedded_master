@@ -22,7 +22,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <string.h>
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -40,6 +41,7 @@
 #define LED2_LINE GPIOA
 #define LED2_PIN GPIO_PIN_6
 #define FREQ 500 //ms
+#define UART_Buff_Size 256
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -50,12 +52,17 @@
 /* Private variables ---------------------------------------------------------*/
 UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_rx;
-DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
 volatile uint8_t btn_flag = TRUE;
 uint32_t btn_time = 0;
 volatile uint8_t led_status = TRUE;
+uint8_t UART_receive_buff[UART_Buff_Size];
+volatile uint8_t Unprocessed_UART_buff_detected = 0;
+char str[7];
+char buff[7];
+int counter = 0;
+int tmp = -100;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -65,6 +72,33 @@ static void MX_USART2_UART_Init(void);
 static void MX_DMA_Init(void);
 /* USER CODE BEGIN PFP */
 void led(volatile uint8_t control);
+int __io_putchar(int ch);
+size_t _read(int Handle, unsigned char * buf, size_t count);
+
+int __io_putchar(int ch) {
+	HAL_UART_Transmit(&huart2, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+	return ch;
+}
+
+size_t _read(int Handle, unsigned char * buf, size_t count)
+{
+	uint8_t ch = 0;
+
+  /* Wait for reception of a character on the USART RX line and echo this
+   * character on console */
+  counter = 0;
+  while(1) {
+	  /* Clear the Overrun flag just before receiving the first character */
+	  __HAL_UART_CLEAR_OREFLAG(&huart2);
+	  HAL_UART_Receive(&huart2, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+	  buf[counter++] = (unsigned char)ch;
+	  if(ch == 0) {
+		  break;
+	  }
+  }
+  return count;
+}
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -110,6 +144,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  /*
 	  if(HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) == GPIO_PIN_RESET && btn_flag)
 	  {
 	    btn_flag = FALSE;
@@ -126,6 +161,8 @@ int main(void)
 	    btn_flag = TRUE;
 	  }
 	  led(led_status);
+	  */
+	  //_read(0, str, 7);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -223,9 +260,6 @@ static void MX_DMA_Init(void)
   /* DMA1_Stream5_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
-  /* DMA1_Stream6_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
 
 }
 
