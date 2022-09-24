@@ -33,8 +33,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define TRUE 1
-#define FALSE 0
 #define LED1
 #define LED1_LINE GPIOA
 #define LED1_PIN GPIO_PIN_5
@@ -42,6 +40,9 @@
 #define LED2_PIN GPIO_PIN_6
 #define FREQ 500 //ms
 #define UART_Buff_Size 256
+#define tV_25   1.34f      // Reference voltage on at 25 °C.
+#define tSlope  0.0043f    // Step in voltage at changing temperature on 1 °C
+#define Vref    3.3f       // Refe voltage on AFC
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -50,28 +51,30 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+
 UART_HandleTypeDef huart2;
-DMA_HandleTypeDef hdma_usart2_rx;
 
 /* USER CODE BEGIN PV */
-volatile uint8_t btn_flag = TRUE;
+volatile uint8_t btn_flag = 1;
 uint32_t btn_time = 0;
-volatile uint8_t led_status = TRUE;
+volatile uint8_t led_status = 1;
 uint8_t UART_receive_buff[UART_Buff_Size];
 volatile uint8_t Unprocessed_UART_buff_detected = 0;
 char str[7];
 char buff[7];
 int counter = 0;
-int tmp = -100;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
-static void MX_DMA_Init(void);
+static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
 void led(volatile uint8_t control);
+int command_proc();
+float get_mcu_temperature();
 int __io_putchar(int ch);
 size_t _read(int Handle, unsigned char * buf, size_t count);
 
@@ -135,7 +138,7 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART2_UART_Init();
-  MX_DMA_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
@@ -144,25 +147,25 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  /*
 	  if(HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) == GPIO_PIN_RESET && btn_flag)
 	  {
-	    btn_flag = FALSE;
+	    btn_flag = 0;
 	    // action by pressing
-	    if(led_status == TRUE) {
-	    	led_status = FALSE;
+	    if(led_status == 1) {
+	    	led_status = 0;
 	    } else {
-	    	led_status = TRUE;
+	    	led_status = 1;
 	    }
 	    btn_time = HAL_GetTick();
 	  }
 	  if(!btn_flag && (HAL_GetTick() - btn_time) > 500)
 	  {
-	    btn_flag = TRUE;
+	    btn_flag = 1;
 	  }
 	  led(led_status);
-	  */
-	  //_read(0, str, 7);
+
+	  _read(0, str, 7);
+	  command_proc();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -186,12 +189,11 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLM = 16;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = 8;
   RCC_OscInitStruct.PLL.PLLN = 336;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV4;
   RCC_OscInitStruct.PLL.PLLQ = 7;
@@ -212,6 +214,56 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_TEMPSENSOR;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_28CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
@@ -244,22 +296,6 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
-
-}
-
-/**
-  * Enable DMA controller clock
-  */
-static void MX_DMA_Init(void)
-{
-
-  /* DMA controller clock enable */
-  __HAL_RCC_DMA1_CLK_ENABLE();
-
-  /* DMA interrupt init */
-  /* DMA1_Stream5_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
 
 }
 
@@ -298,7 +334,7 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 void led(volatile uint8_t control) {
-	if(control == TRUE) {
+	if(control == 1) {
 #ifdef LED1
 	  HAL_GPIO_TogglePin(LED1_LINE, LED1_PIN);
 #endif
@@ -307,6 +343,37 @@ void led(volatile uint8_t control) {
 #endif
 	  HAL_Delay(FREQ);
 	}
+}
+
+float get_mcu_temperature() {
+	int16_t result = 0;
+	float temperature = 0;
+    HAL_Delay(1000);
+    HAL_ADC_Start(&hadc1);                                     // Starting ADC
+    if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK)     // Waiting for conversion
+    {
+        result = HAL_ADC_GetValue(&hadc1);                  // Reading from ADC
+
+        temperature = (float) result/4096*Vref;	          // Voltage on sensor
+        temperature = (tV_25-temperature)/tSlope + 25;   // Temperature in C
+        temperature = temperature * 16;                 // Format for DS18B20.
+    }
+    HAL_ADC_Stop(&hadc1); // Stop the ADC
+
+    return temperature;
+}
+
+int command_proc() {
+	if(strcmp(str,"T MCU?\0")) {
+		float temperature = get_mcu_temperature();
+		printf("T MCU=%.2f%сC\r\n", temperature, (char)248);
+	} else if(strcmp(str,"V REF?\0")) {
+
+	} else if(strcmp(str,"ALL SENSE?\0")) {
+
+	}
+	//memset(str,0,sizeof(str));
+	return 0;
 }
 /* USER CODE END 4 */
 
