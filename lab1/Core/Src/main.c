@@ -39,7 +39,6 @@
 #define LED2_LINE GPIOA
 #define LED2_PIN GPIO_PIN_6
 #define FREQ 500 //ms
-#define UART_Buff_Size 256
 #define tV_25   1.34f      // Reference voltage on at 25 °C.
 #define tSlope  0.0043f    // Step in voltage at changing temperature on 1 °C
 #define Vref    3.3f       // Refe voltage on AFC
@@ -52,6 +51,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
 
 UART_HandleTypeDef huart2;
 
@@ -59,25 +59,26 @@ UART_HandleTypeDef huart2;
 volatile uint8_t btn_flag = 1;
 uint32_t btn_time = 0;
 volatile uint8_t led_status = 1;
-uint8_t UART_receive_buff[UART_Buff_Size];
-volatile uint8_t Unprocessed_UART_buff_detected = 0;
-char str[7];
-char buff[7];
+char str[11];
 int counter = 0;
+uint32_t ADC_1, ADC_2;
+uint32_t ADC_Value[100];
+float temperature = 0;
+float v_ref_sensor = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
 void led(volatile uint8_t control);
-int command_proc();
-float get_mcu_temperature();
+void command_proc();
+void adc_proc();
 int __io_putchar(int ch);
 size_t _read(int Handle, unsigned char * buf, size_t count);
-
 int __io_putchar(int ch) {
 	HAL_UART_Transmit(&huart2, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
 	return ch;
@@ -138,9 +139,10 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART2_UART_Init();
+  MX_DMA_Init();
   MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
-
+  HAL_ADC_Start_DMA(&hadc1,(uint32_t*)&ADC_Value,100);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -163,9 +165,6 @@ int main(void)
 	    btn_flag = 1;
 	  }
 	  led(led_status);
-
-	  _read(0, str, 7);
-	  command_proc();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -238,14 +237,14 @@ static void MX_ADC1_Init(void)
   hadc1.Instance = ADC1;
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc1.Init.ScanConvMode = DISABLE;
-  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.ScanConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 1;
-  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.NbrOfConversion = 2;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
@@ -256,6 +255,14 @@ static void MX_ADC1_Init(void)
   sConfig.Channel = ADC_CHANNEL_TEMPSENSOR;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_28CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Rank = 2;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -296,6 +303,22 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA2_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
 
 }
 
@@ -345,35 +368,34 @@ void led(volatile uint8_t control) {
 	}
 }
 
-float get_mcu_temperature() {
-	int16_t result = 0;
-	float temperature = 0;
-    HAL_Delay(1000);
-    HAL_ADC_Start(&hadc1);                                     // Starting ADC
-    if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK)     // Waiting for conversion
-    {
-        result = HAL_ADC_GetValue(&hadc1);                  // Reading from ADC
+void adc_proc() {
+	//calibration
+    for(uint8_t i = 0; i < 100;) {
+    	ADC_1 = ADC_Value[i++];
+    	ADC_2 = ADC_Value[i++];
+	}
 
-        temperature = (float) result/4096*Vref;	          // Voltage on sensor
-        temperature = (tV_25-temperature)/tSlope + 25;   // Temperature in C
-        temperature = temperature * 16;                 // Format for DS18B20.
-    }
-    HAL_ADC_Stop(&hadc1); // Stop the ADC
+    temperature = (float)ADC_1/4096*Vref;
+    temperature = (tV_25-temperature)/tSlope + 25;
 
-    return temperature;
+    v_ref_sensor = (float)ADC_2*Vref/4096;
 }
 
-int command_proc() {
-	if(strcmp(str,"T MCU?\0")) {
-		float temperature = get_mcu_temperature();
+void command_proc() {
+	if(strcmp(str,"T MCU?\0\0\0\0") == 0) {
+		adc_proc();
 		printf("T MCU=%.2f%сC\r\n", temperature, (char)248);
-	} else if(strcmp(str,"V REF?\0")) {
-
-	} else if(strcmp(str,"ALL SENSE?\0")) {
-
+	} else if(strcmp(str,"V REF?\0\0\0\0") == 0) {
+		adc_proc();
+		printf("V REF=%.2f V\r\n", v_ref_sensor);
+	} else if(strcmp(str,"ALL SENSE?") == 0) {
+		adc_proc();
+		printf("T MCU=%.2f%сC\r\n", temperature, (char)248);
+		printf("V REF=%.2f V\r\n", v_ref_sensor);
+	} else {
+		printf("Error!\r\n");
 	}
-	//memset(str,0,sizeof(str));
-	return 0;
+	memset(str,0,sizeof(str));
 }
 /* USER CODE END 4 */
 
