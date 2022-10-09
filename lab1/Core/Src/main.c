@@ -42,6 +42,7 @@
 #define tV_25   1.34f      // Reference voltage on at 25 °C.
 #define tSlope  0.0043f    // Step in voltage at changing temperature on 1 °C
 #define Vref    3.3f       // Refe voltage on AFC
+#define UART_BUFF_SIZE 25
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -54,12 +55,14 @@ ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
 
 UART_HandleTypeDef huart2;
+DMA_HandleTypeDef hdma_usart2_rx;
 
 /* USER CODE BEGIN PV */
 volatile uint8_t btn_flag = 1;
 uint32_t btn_time = 0;
 volatile uint8_t led_status = 1;
-char str[11];
+uint8_t str[UART_BUFF_SIZE];
+uint8_t Unprocessed_UART_buff_detected = 0;
 int counter = 0;
 uint32_t ADC_1, ADC_2;
 uint32_t ADC_Value[100];
@@ -77,6 +80,7 @@ static void MX_ADC1_Init(void);
 void led(volatile uint8_t control);
 void command_proc();
 void adc_proc();
+void USER_UART_IDLECallback(UART_HandleTypeDef *huart);
 int __io_putchar(int ch);
 size_t _read(int Handle, unsigned char * buf, size_t count);
 int __io_putchar(int ch) {
@@ -138,8 +142,8 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_USART2_UART_Init();
   MX_DMA_Init();
+  MX_USART2_UART_Init();
   MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
   HAL_ADC_Start_DMA(&hadc1,(uint32_t*)&ADC_Value,100);
@@ -165,6 +169,12 @@ int main(void)
 	    btn_flag = 1;
 	  }
 	  led(led_status);
+	  if(Unprocessed_UART_buff_detected) {
+		  command_proc();
+		  Unprocessed_UART_buff_detected = 0;
+	  }
+	  __HAL_UART_ENABLE_IT(&huart2, UART_IT_IDLE);
+	  HAL_UART_Receive_DMA(&huart2, str, UART_BUFF_SIZE-1);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -188,11 +198,12 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLM = 8;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = 16;
   RCC_OscInitStruct.PLL.PLLN = 336;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV4;
   RCC_OscInitStruct.PLL.PLLQ = 7;
@@ -261,8 +272,8 @@ static void MX_ADC1_Init(void)
   }
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
   */
+  sConfig.Channel = ADC_CHANNEL_VREFINT;
   sConfig.Rank = 2;
-  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -313,9 +324,13 @@ static void MX_DMA_Init(void)
 {
 
   /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
   __HAL_RCC_DMA2_CLK_ENABLE();
 
   /* DMA interrupt init */
+  /* DMA1_Stream5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
   /* DMA2_Stream0_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
@@ -382,10 +397,10 @@ void adc_proc() {
 }
 
 void command_proc() {
-	if(strcmp(str,"T MCU?\0\0\0\0") == 0) {
+	if(strcmp(str,"T MCU?") == 0) {
 		adc_proc();
 		printf("T MCU=%.2f%сC\r\n", temperature, (char)248);
-	} else if(strcmp(str,"V REF?\0\0\0\0") == 0) {
+	} else if(strcmp(str,"V REF?") == 0) {
 		adc_proc();
 		printf("V REF=%.2f V\r\n", v_ref_sensor);
 	} else if(strcmp(str,"ALL SENSE?") == 0) {
@@ -396,6 +411,25 @@ void command_proc() {
 		printf("Error!\r\n");
 	}
 	memset(str,0,sizeof(str));
+}
+
+void USER_UART_IRQHandler(UART_HandleTypeDef *huart)
+{
+  if(huart->Instance == USART2)                                   //Determine whether it is serial port 1
+    {
+        if(RESET != __HAL_UART_GET_FLAG(huart, UART_FLAG_IDLE))   //Judging whether it is idle interruption
+        {
+            __HAL_UART_CLEAR_IDLEFLAG(huart);                     //Clear idle interrupt sign (otherwise it will continue to enter interrupt)
+            USER_UART_IDLECallback(huart);                          //Call interrupt handler
+        }
+    }
+}
+void USER_UART_IDLECallback(UART_HandleTypeDef *huart)
+{
+    //Stop this DMA transmission
+    HAL_UART_DMAStop(huart);
+    Unprocessed_UART_buff_detected = SET;
+    //Next DMA transmission will be allowed after buffer processing
 }
 /* USER CODE END 4 */
 
