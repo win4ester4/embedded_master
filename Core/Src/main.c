@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include <string.h>
 #include <stdio.h>
+#include "state_types.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -58,16 +59,15 @@ UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_rx;
 
 /* USER CODE BEGIN PV */
-volatile uint8_t btn_flag = 1;
-uint32_t btn_time = 0;
-volatile uint8_t led_status = 1;
+volatile uint32_t btn_time = 0;
 uint8_t str[UART_BUFF_SIZE];
-uint8_t Unprocessed_UART_buff_detected = 0;
 int counter = 0;
 uint32_t ADC_1, ADC_2;
 uint32_t ADC_Value[100];
 float temperature = 0;
 float v_ref_sensor = 0;
+volatile buttonAntibounceStates_t btn_anti_states = btn_wait_press;
+volatile uartBufferStates_t uart_buff_states = uart_wait_buff;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -80,33 +80,8 @@ static void MX_ADC1_Init(void);
 void led(volatile uint8_t control);
 void command_proc();
 void adc_proc();
-void USER_UART_IDLECallback(UART_HandleTypeDef *huart);
 int __io_putchar(int ch);
 size_t _read(int Handle, unsigned char * buf, size_t count);
-int __io_putchar(int ch) {
-	HAL_UART_Transmit(&huart2, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
-	return ch;
-}
-
-size_t _read(int Handle, unsigned char * buf, size_t count)
-{
-	uint8_t ch = 0;
-
-  /* Wait for reception of a character on the USART RX line and echo this
-   * character on console */
-  counter = 0;
-  while(1) {
-	  /* Clear the Overrun flag just before receiving the first character */
-	  __HAL_UART_CLEAR_OREFLAG(&huart2);
-	  HAL_UART_Receive(&huart2, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
-	  buf[counter++] = (unsigned char)ch;
-	  if(ch == 0) {
-		  break;
-	  }
-  }
-  return count;
-}
-
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -121,7 +96,7 @@ size_t _read(int Handle, unsigned char * buf, size_t count)
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-
+	volatile uint8_t led_status = 1;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -142,8 +117,8 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_DMA_Init();
   MX_USART2_UART_Init();
+  MX_DMA_Init();
   MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
   HAL_ADC_Start_DMA(&hadc1,(uint32_t*)&ADC_Value,100);
@@ -153,28 +128,30 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  if(HAL_GPIO_ReadPin(B1_GPIO_Port, B1_Pin) == GPIO_PIN_RESET && btn_flag)
-	  {
-	    btn_flag = 0;
-	    // action by pressing
-	    if(led_status == 1) {
-	    	led_status = 0;
-	    } else {
-	    	led_status = 1;
-	    }
-	    btn_time = HAL_GetTick();
+	  switch(btn_anti_states) {
+	  case btn_wait_press:
+		  led(led_status);
+		  break;
+	  case btn_pressed:
+		  btn_time = HAL_GetTick();
+		  break;
+	  case btn_realese_delay:
+		  !led_status;
+		  btn_anti_states = btn_wait_press;
+		  break;
 	  }
-	  if(!btn_flag && (HAL_GetTick() - btn_time) > 500)
-	  {
-	    btn_flag = 1;
-	  }
-	  led(led_status);
-	  if(Unprocessed_UART_buff_detected) {
+
+	  switch(uart_buff_states) {
+	  case uart_wait_buff:
+		  __HAL_UART_ENABLE_IT(&huart2, UART_IT_IDLE);
+		  HAL_UART_Receive_DMA(&huart2, str, UART_BUFF_SIZE-1);
+		  break;
+	  case unproc_buff_detected:
 		  command_proc();
-		  Unprocessed_UART_buff_detected = 0;
+		  uart_buff_states = uart_wait_buff;
+		  break;
 	  }
-	  __HAL_UART_ENABLE_IT(&huart2, UART_IT_IDLE);
-	  HAL_UART_Receive_DMA(&huart2, str, UART_BUFF_SIZE-1);
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -355,11 +332,11 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5|GPIO_PIN_6, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : B1_Pin */
-  GPIO_InitStruct.Pin = B1_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  /*Configure GPIO pin : PC13 */
+  GPIO_InitStruct.Pin = GPIO_PIN_13;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PA5 PA6 */
   GPIO_InitStruct.Pin = GPIO_PIN_5|GPIO_PIN_6;
@@ -367,6 +344,10 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
 }
 
@@ -413,23 +394,28 @@ void command_proc() {
 	memset(str,0,sizeof(str));
 }
 
-void USER_UART_IRQHandler(UART_HandleTypeDef *huart)
-{
-  if(huart->Instance == USART2)                                   //Determine whether it is serial port 1
-    {
-        if(RESET != __HAL_UART_GET_FLAG(huart, UART_FLAG_IDLE))   //Judging whether it is idle interruption
-        {
-            __HAL_UART_CLEAR_IDLEFLAG(huart);                     //Clear idle interrupt sign (otherwise it will continue to enter interrupt)
-            USER_UART_IDLECallback(huart);                          //Call interrupt handler
-        }
-    }
+int __io_putchar(int ch) {
+	HAL_UART_Transmit(&huart2, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+	return ch;
 }
-void USER_UART_IDLECallback(UART_HandleTypeDef *huart)
+
+size_t _read(int Handle, unsigned char * buf, size_t count)
 {
-    //Stop this DMA transmission
-    HAL_UART_DMAStop(huart);
-    Unprocessed_UART_buff_detected = SET;
-    //Next DMA transmission will be allowed after buffer processing
+	uint8_t ch = 0;
+
+  /* Wait for reception of a character on the USART RX line and echo this
+   * character on console */
+  counter = 0;
+  while(1) {
+	  /* Clear the Overrun flag just before receiving the first character */
+	  __HAL_UART_CLEAR_OREFLAG(&huart2);
+	  HAL_UART_Receive(&huart2, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+	  buf[counter++] = (unsigned char)ch;
+	  if(ch == 0) {
+		  break;
+	  }
+  }
+  return count;
 }
 /* USER CODE END 4 */
 
