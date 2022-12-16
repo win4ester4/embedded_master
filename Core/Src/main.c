@@ -44,6 +44,7 @@
 #define tSlope  0.0043f    // Step in voltage at changing temperature on 1 °C
 #define Vref    3.3f       // Refe voltage on AFC
 #define UART_BUFF_SIZE 25
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -117,8 +118,8 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_USART2_UART_Init();
   MX_DMA_Init();
+  MX_USART2_UART_Init();
   MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
   HAL_ADC_Start_DMA(&hadc1,(uint32_t*)&ADC_Value,100);
@@ -132,11 +133,12 @@ int main(void)
 	  case btn_wait_press:
 		  led(led_status);
 		  break;
-	  case btn_pressed:
-		  btn_time = HAL_GetTick();
-		  break;
 	  case btn_realese_delay:
-		  !led_status;
+		  if(led_status == 1) {
+		    led_status = 0;
+		  } else {
+		    led_status = 1;
+		  }
 		  btn_anti_states = btn_wait_press;
 		  break;
 	  }

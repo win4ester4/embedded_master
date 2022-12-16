@@ -15,6 +15,7 @@ inline void HAL_SYSTICK_Callback(void) {
 
 inline void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 	btn_anti_states = btn_pressed;
+	btn_time = HAL_GetTick();
 }
 
 inline void USER_UART_IDLECallback(UART_HandleTypeDef *huart)
